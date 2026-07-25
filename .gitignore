@@ -28,7 +28,7 @@ anaconda_projects/
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynb
+# *.ipynb  # notebooks maintenant commits
 
 # Data (raw datasets are large)
 data/raw/*
