@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Anaconda
+anaconda_projects/
+
+# Surprise data cache
+.surprise_data/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data (raw datasets are large)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Models / artifacts (large binary)
+*.pkl
+*.pt
+*.pth
+*.npy
+*.npz
+data/processed/artifacts/*
+checkpoints/
+runs/
+wandb/
+
+# Logs
+*.log
+logs/
+
+# Env
+.env
+.env.local
