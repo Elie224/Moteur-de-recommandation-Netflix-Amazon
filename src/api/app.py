@@ -1,19 +1,6 @@
 """FastAPI app exposing recommendation endpoints.
 
-Endpoints
----------
-GET  /                          -> service info
-GET  /health                    -> health check
-GET  /models                    -> list available models
-GET  /movies/{movie_id}         -> movie metadata
-GET  /movies?query=...          -> search movies
-GET  /users/{user_id}/recommend -> top-K for an existing user
-GET  /predict                   -> predict rating for (user, item)
-POST /cold-start/recommend      -> recommend for a brand-new user (hybrid only)
-GET  /stats                     -> dataset stats
-
-Run with:
-    .venv/Scripts/uvicorn src.api.app:app --reload --port 8000
+Loads self-contained artifacts (no dependency on raw data files).
 """
 from __future__ import annotations
 
@@ -21,7 +8,6 @@ import json
 import pickle
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -33,15 +19,10 @@ ROOT = Path(__file__).resolve().parents[2]
 ART = ROOT / "data" / "processed" / "artifacts"
 
 
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
-
-
 class MovieInfo(BaseModel):
     movie_id: int
     title: str
-    year: Optional[int] = None
+    year: int | None = None
     genres: str = ""
 
 
@@ -49,7 +30,7 @@ class Recommendation(BaseModel):
     movie_id: int
     title: str
     score: float
-    year: Optional[int] = None
+    year: int | None = None
     genres: str = ""
 
 
@@ -80,54 +61,61 @@ class ColdStartResponse(BaseModel):
     recommendations: list[Recommendation]
 
 
-# ---------------------------------------------------------------------------
-# Model store
-# ---------------------------------------------------------------------------
-
-
 class ModelStore:
-    """Loads trained artifacts once at startup."""
+    """Loads standardized, self-contained artifacts once at startup."""
 
     def __init__(self, art_dir: Path):
         self.art_dir = art_dir
         self.cosine = None
         self.svd = None
         self.lightfm = None
+        self.lightfm_state: dict | None = None
+        self.user_features_mat: np.ndarray | None = None
+        self.item_features_mat: np.ndarray | None = None
+        self.user_index: dict[str, int] = {}
+        self.item_index: dict[str, int] = {}
         self.movies: pd.DataFrame | None = None
         self.meta: dict | None = None
-        self.lightfm_state: dict | None = None
+        self.manifest: dict | None = None
 
     def load(self) -> None:
-        with open(self.art_dir / "cosine.pkl", "rb") as f:
+        with open(self.art_dir / "item_item_cosine.pkl", "rb") as f:
             self.cosine = pickle.load(f)
-        with open(self.art_dir / "svd.pkl", "rb") as f:
+        with open(self.art_dir / "surprise_svd.pkl", "rb") as f:
             self.svd = pickle.load(f)
-        self.lightfm_state = torch.load(self.art_dir / "lightfm.pt",
-                                         map_location="cpu", weights_only=False)
+        self.lightfm_state = torch.load(
+            self.art_dir / "hybrid_lightfm_state.pt",
+            map_location="cpu", weights_only=False,
+        )
+        self.user_features_mat = np.load(self.art_dir / "user_features.npy")
+        self.item_features_mat = np.load(self.art_dir / "item_features.npy")
+        self.user_index = {int(k): int(v) for k, v in json.load(open(self.art_dir / "user_index.json")).items()}
+        self.item_index = {int(k): int(v) for k, v in json.load(open(self.art_dir / "item_index.json")).items()}
         self.movies = pd.read_csv(self.art_dir / "movies.csv")
-        with open(self.art_dir / "meta.json") as f:
-            self.meta = json.load(f)
+        self.meta = json.load(open(self.art_dir / "metadata.json"))
+        self.manifest = json.load(open(self.art_dir / "manifest.json"))
 
-    def movie_title(self, movie_id: int) -> tuple[str, Optional[int], str]:
+    def movie_title(self, movie_id: int) -> tuple[str, int | None, str]:
         if self.movies is None:
             return (str(movie_id), None, "")
         row = self.movies[self.movies["movie_id"] == movie_id]
         if row.empty:
             return (f"unknown ({movie_id})", None, "")
-        return str(row.iloc[0]["title"]), int(row.iloc[0]["year"]) if row.iloc[0]["year"] == row.iloc[0]["year"] else None, str(row.iloc[0]["genres_str"])
+        y = row.iloc[0]["year"]
+        return (
+            str(row.iloc[0]["title"]),
+            int(y) if y == y else None,
+            str(row.iloc[0]["genres_str"]),
+        )
 
     def get_model(self, name: str):
-        name = name.lower()
-        if name in ("cosine", "itemitemcosine"):
+        n = name.lower()
+        if n in ("cosine", "itemitemcosine", "item_item_cosine"):
             return self.cosine
-        if name in ("svd", "surrecomendsvd", "surprise_svd"):
+        if n in ("svd", "surrecomendsvd", "surprise_svd"):
             return self.svd
-        raise HTTPException(status_code=404, detail=f"Unknown model '{name}'. Available: cosine, svd")
-
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
+        raise HTTPException(status_code=404,
+                            detail=f"Unknown model '{name}'. Available: cosine, svd")
 
 
 store = ModelStore(ART)
@@ -135,16 +123,16 @@ store = ModelStore(ART)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[startup] Loading production models...")
+    print("[startup] Loading production artifacts...")
     store.load()
-    print(f"[startup] Loaded. Movies: {len(store.movies)}")
+    print(f"[startup] Loaded. Movies: {len(store.movies)}, manifest commit: {store.manifest.get('git_commit', 'n/a')}")
     yield
     print("[shutdown] Done.")
 
 
 app = FastAPI(
     title="Moteur de recommandation",
-    description="API pour servir des recommandations de films (MovieLens 1M).",
+    description="Recommandations de films (MovieLens 1M) - cosine, SVD, hybride LightFM (cold start).",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -154,17 +142,14 @@ app = FastAPI(
 def root() -> dict:
     return {
         "service": "moteur-recommandation",
-        "version": "1.0.0",
+        "version": store.manifest.get("trained_at", "unknown") if store.manifest else "unknown",
+        "git_commit": store.manifest.get("git_commit") if store.manifest else None,
         "models": ["cosine", "svd"],
         "endpoints": [
-            "GET /health",
-            "GET /models",
-            "GET /movies/{id}",
-            "GET /movies?query=...",
+            "GET /health", "GET /models", "GET /stats", "GET /manifest",
+            "GET /movies/{id}", "GET /movies?query=...",
             "GET /users/{user_id}/recommend",
-            "GET /predict",
-            "POST /cold-start/recommend",
-            "GET /stats",
+            "GET /predict", "POST /cold-start/recommend",
         ],
     }
 
@@ -172,6 +157,11 @@ def root() -> dict:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/manifest")
+def get_manifest() -> dict:
+    return store.manifest or {}
 
 
 @app.get("/models")
@@ -191,8 +181,8 @@ def stats() -> dict:
         "n_users": store.meta["n_users"],
         "n_items": store.meta["n_items"],
         "n_ratings": store.meta["n_ratings"],
-        "n_user_features": len(store.meta["user_feat_vocab"]),
-        "n_item_features": len(store.meta["item_feat_vocab"]),
+        "n_user_features": store.meta["n_user_features"],
+        "n_item_features": store.meta["n_item_features"],
     }
 
 
@@ -203,9 +193,12 @@ def get_movie(movie_id: int) -> MovieInfo:
 
 
 @app.get("/movies")
-def search_movies(query: str = Query(..., min_length=1), limit: int = 10) -> list[MovieInfo]:
+def search_movies(query: str = Query(..., min_length=1, max_length=200),
+                  limit: int = Query(10, ge=1, le=100)) -> list[MovieInfo]:
     q = query.lower()
-    matches = store.movies[store.movies["title"].str.lower().str.contains(q, na=False)].head(limit)
+    matches = store.movies[
+        store.movies["title"].str.lower().str.contains(q, na=False, regex=False)
+    ].head(limit)
     return [
         MovieInfo(
             movie_id=int(r.movie_id),
@@ -217,12 +210,30 @@ def search_movies(query: str = Query(..., min_length=1), limit: int = 10) -> lis
     ]
 
 
+def _model_knows_user(model, user_id: int) -> bool | None:
+    if hasattr(model, "user_index_"):
+        return user_id in model.user_index_
+    if hasattr(model, "trainset_"):
+        try:
+            model.trainset_.to_inner_uid(int(user_id))
+            return True
+        except ValueError:
+            return False
+    return None
+
+
 @app.get("/users/{user_id}/recommend", response_model=RecommendationResponse)
 def recommend_for_user(user_id: int,
                        model: str = Query("cosine"),
                        top_k: int = Query(10, ge=1, le=100),
                        exclude_seen: bool = Query(True)) -> RecommendationResponse:
     m = store.get_model(model)
+    known = _model_knows_user(m, user_id)
+    if known is False:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User {user_id} unknown. Use /cold-start/recommend instead.",
+        )
     recs = m.recommend(user_id, top_k=top_k, exclude_seen=exclude_seen)
     out = []
     for iid, score in recs:
@@ -242,14 +253,42 @@ def recommend_for_user(user_id: int,
 def predict(user_id: int, movie_id: int,
             model: str = Query("svd")) -> PredictionResponse:
     m = store.get_model(model)
-    if hasattr(m, "_predict"):
-        rating = m._predict(user_id, movie_id)
-    else:
-        pairs = pd.DataFrame({"user_id": [user_id], "movie_id": [movie_id]})
-        rating = list(m.predict_for_pairs(pairs).values())[0]
+    pairs = pd.DataFrame({"user_id": [user_id], "movie_id": [movie_id]})
+    predictions = m.predict_for_pairs(pairs)
+    if not predictions:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User {user_id} or movie {movie_id} unknown to model {model}.",
+        )
+    rating = next(iter(predictions.values()))
     return PredictionResponse(user_id=user_id, movie_id=movie_id,
                               model=model.lower(),
                               predicted_rating=float(rating))
+
+
+def _build_lightfm_from_state() -> "LightFMModel":
+    """Build the LightFM model from self-contained artifacts (no raw data needed)."""
+    from src.models.hybrid import LightFMModel, HybridCF
+    state = store.lightfm_state
+    user_vocab = {tuple(k.split("=", 1)): int(v)
+                  for k, v in json.load(open(ART / "user_feat_vocab.json")).items()}
+    item_vocab = {tuple(k.split("=", 1)): int(v)
+                  for k, v in json.load(open(ART / "item_feat_vocab.json")).items()}
+    lfm = LightFMModel(n_factors=state["n_factors"])
+    lfm.user_feat_index_ = user_vocab
+    lfm.item_feat_index_ = item_vocab
+    lfm.user_index_ = store.user_index
+    lfm.item_index_ = store.item_index
+    lfm.user_features_mat_ = torch.tensor(store.user_features_mat)
+    lfm.item_features_mat_ = torch.tensor(store.item_features_mat)
+    lfm.model = HybridCF(
+        n_users=len(store.user_index), n_items=len(store.item_index),
+        n_user_features=state["n_user_feats"], n_item_features=state["n_item_feats"],
+        n_factors=state["n_factors"],
+    )
+    lfm.model.load_state_dict(state["model_state"])
+    lfm.model.eval()
+    return lfm
 
 
 @app.post("/cold-start/recommend", response_model=ColdStartResponse)
@@ -257,8 +296,7 @@ def cold_start_recommend(features: ColdStartFeatures,
                          top_k: int = Query(10, ge=1, le=50)) -> ColdStartResponse:
     if store.lightfm_state is None:
         raise HTTPException(status_code=503, detail="LightFM model not loaded.")
-    # Lazy build of the LightFMModel from state
-    lfm = _build_lightfm_from_state(store)
+    lfm = _build_lightfm_from_state()
     feats = [
         ("gender", str(features.gender)),
         ("age", str(features.age)),
@@ -270,74 +308,4 @@ def cold_start_recommend(features: ColdStartFeatures,
         title, year, genres = store.movie_title(iid)
         out.append(Recommendation(movie_id=iid, title=title, score=float(score),
                                   year=year, genres=genres))
-    return ColdStartResponse(model="lightfm_hybrid", top_k=top_k, recommendations=out)
-
-
-def _build_lightfm_from_state(store: ModelStore):
-    from src.models.hybrid import LightFMModel, HybridCF
-    import numpy as np
-    import torch as _torch
-    state = store.lightfm_state
-    lfm = LightFMModel(n_factors=state["n_factors"])
-    # Use the stored vocabs (NOT rebuild) so indices match the trained embeddings
-    lfm.user_feat_index_ = {(k.split("=", 1)[0], k.split("=", 1)[1]): v
-                             for k, v in store.meta["user_feat_vocab"].items()}
-    lfm.item_feat_index_ = {(k.split("=", 1)[0], k.split("=", 1)[1]): v
-                             for k, v in store.meta["item_feat_vocab"].items()}
-    ml = _load_ml_for_features(store)
-    # Rebuild ID mappings from RATINGS (matches what the trained model saw)
-    # ml.movies may include movies with no ratings -> would mismatch dimensions
-    lfm.user_index_ = {int(u): i for i, u in enumerate(np.sort(ml.ratings["user_id"].unique()))}
-    lfm.item_index_ = {int(m): i for i, m in enumerate(np.sort(ml.ratings["movie_id"].unique()))}
-    # Build feature matrices using the STORED vocab indices, ordered by ratings
-    rating_user_ids = np.sort(ml.ratings["user_id"].unique())
-    rating_item_ids = np.sort(ml.ratings["movie_id"].unique())
-    users_df = ml.users.set_index("user_id").loc[rating_user_ids].reset_index()
-    movies_df = ml.movies.set_index("movie_id").loc[rating_item_ids].reset_index()
-    user_keys = []
-    for _, row in users_df.iterrows():
-        user_keys.append([
-            ("gender", str(row["gender"])),
-            ("age", str(row["age"])),
-            ("occupation", str(row["occupation"])),
-        ])
-    max_u = max(len(ks) for ks in user_keys)
-    u_mat = np.zeros((len(rating_user_ids), max_u), dtype=np.int64)
-    for i, ks in enumerate(user_keys):
-        for j, k in enumerate(ks):
-            if k in lfm.user_feat_index_:
-                u_mat[i, j] = lfm.user_feat_index_[k]
-    lfm.user_features_mat_ = _torch.tensor(u_mat)
-    item_keys = []
-    for _, row in movies_df.iterrows():
-        ks = [("genre", g) for g in (row["genres_list"] or [])]
-        try:
-            year = int(row["year"]) if row["year"] == row["year"] else None
-        except (TypeError, ValueError):
-            year = None
-        if year:
-            decade = (year // 10) * 10
-            ks.append(("decade", str(decade)))
-        item_keys.append(ks)
-    max_i = max(len(ks) for ks in item_keys) if item_keys else 1
-    i_mat = np.zeros((len(rating_item_ids), max_i), dtype=np.int64)
-    for i, ks in enumerate(item_keys):
-        for j, k in enumerate(ks):
-            if k in lfm.item_feat_index_:
-                i_mat[i, j] = lfm.item_feat_index_[k]
-    lfm.item_features_mat_ = _torch.tensor(i_mat)
-    # Re-load the model with right dims
-    lfm.model = HybridCF(
-        n_users=len(lfm.user_index_), n_items=len(lfm.item_index_),
-        n_user_features=state["n_user_feats"], n_item_features=state["n_item_feats"],
-        n_factors=state["n_factors"],
-    )
-    lfm.model.load_state_dict(state["model_state"])
-    lfm.model.eval()
-    return lfm
-
-
-def _load_ml_for_features(store: ModelStore):
-    """Re-load MovieLens to rebuild feature tables (cheap, ~1s)."""
-    from src.data.loaders import load_movielens_1m
-    return load_movielens_1m(ROOT / "data" / "raw" / "ml-1m")
+    return ColdStartResponse(model="hybrid_lightfm", top_k=top_k, recommendations=out)

@@ -54,3 +54,13 @@ logs/
 # Env
 .env
 .env.local
+.npm-cache/
+.docker-config/
+
+# Node / Next.js
+node_modules/
+.next/
+*.tsbuildinfo
+
+# Local scaffolding scratch files
+infra/scripts/_scratch/

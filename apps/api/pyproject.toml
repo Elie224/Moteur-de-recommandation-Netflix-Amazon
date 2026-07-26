@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recommender-api"
+version = "0.1.0"
+description = "RecoSphere recommendation API (FastAPI)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "recommendation-engine>=0.1.0",
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
+    "alembic>=1.13",
+    "bcrypt>=4.0",
+    "python-jose[cryptography]>=3.3",
+    "python-multipart>=0.0.6",
+    "httpx>=0.24",
+    "email-validator>=2.0",
+    "anthropic>=0.40",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
