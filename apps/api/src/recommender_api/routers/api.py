@@ -189,6 +189,7 @@ def create_interaction(payload: InteractionCreate, db: Db, current_user: Current
         **payload.model_dump(),
     )
     db.commit()
+    recommendation_service.recommendation_model_service.invalidate(item.item_type)
     return interaction
 
 
@@ -245,7 +246,7 @@ def recommendations(
     settings = get_settings()
     requested_top_k = min(top_k or settings.recommendation_default_top_k, settings.recommendation_max_top_k)
     preferences = interaction_service.load_preferences(db, current_user.id)
-    recommender = recommendation_service.fit_recommender_for_domain(db, item_type)
+    recommender = recommendation_service.recommendation_model_service.get_model(db, item_type)
     context = recommendation_service.build_recommendation_context(
         db, current_user.id, item_type, requested_top_k, preferences
     )
@@ -333,6 +334,7 @@ async def sync_tmdb(db: Db, _: CurrentAdmin) -> dict[str, Any]:
             collections=("trending", "popular", "upcoming"),
             max_pages=2,
         )
+        recommendation_service.recommendation_model_service.invalidate("movie")
     except TMDBConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except TMDBRateLimitError as exc:

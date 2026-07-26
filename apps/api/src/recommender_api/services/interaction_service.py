@@ -125,11 +125,33 @@ def seen_items_for(
     user_id: int,
     item_type: str | None = None,
 ) -> set[int]:
-    """Return hard exclusions, not every item merely viewed or impressed."""
-    latest = _latest_strong_events_for(db, user_id, item_type)
-    seen = set(latest)
+    """Return active items the user has seen, including soft signals."""
+    stmt = (
+        select(Interaction.catalog_item_id)
+        .join(CatalogItem, CatalogItem.id == Interaction.catalog_item_id)
+        .where(
+            Interaction.user_id == user_id,
+            Interaction.event_type != "impression",
+            CatalogItem.is_active.is_(True),
+        )
+    )
+    if item_type:
+        stmt = stmt.where(CatalogItem.item_type == item_type)
+    seen = {int(item_id) for item_id in db.execute(stmt).scalars()}
     seen.update(favorite_items_for(db, user_id, item_type))
     return seen
+
+
+def excluded_items_for(
+    db: Session,
+    user_id: int,
+    item_type: str | None = None,
+) -> set[int]:
+    """Return items that must be omitted from the current ranking."""
+    latest = _latest_strong_events_for(db, user_id, item_type)
+    excluded = set(latest)
+    excluded.update(favorite_items_for(db, user_id, item_type))
+    return excluded
 
 
 def list_interactions_for(db: Session, user_id: int, limit: int = 100) -> list[Interaction]:

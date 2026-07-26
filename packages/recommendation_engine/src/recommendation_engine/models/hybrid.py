@@ -45,7 +45,7 @@ class HybridRecommender(BaseRecommender):
                     reasons[rec.item_id] = (contribution, rec.reason)
         out: list[Recommendation] = []
         for iid, breakdown in all_scores.items():
-            if iid in context.seen_item_ids:
+            if context.is_excluded(iid):
                 continue
             total = sum(breakdown.values())
             out.append(

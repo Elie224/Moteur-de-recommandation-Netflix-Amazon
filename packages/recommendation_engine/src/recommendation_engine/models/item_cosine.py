@@ -118,7 +118,8 @@ class ItemItemCosineRecommender(BaseRecommender):
             return []
         sim_block = self._sim[cols].toarray()
         scores = (sim_block.T @ data).astype(np.float32)
-        for iid in context.seen_item_ids:
+        excluded_ids = context.seen_item_ids if context.excluded_item_ids is None else context.excluded_item_ids
+        for iid in excluded_ids:
             if iid in self._item_index:
                 scores[self._item_index[iid]] = -np.inf
         order = np.argsort(-scores)

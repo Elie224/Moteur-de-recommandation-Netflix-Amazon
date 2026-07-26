@@ -24,10 +24,21 @@ class RecommendationContext:
     item_type: str  # "movie" or "product"
     top_k: int = 20
     seen_item_ids: set[int] = field(default_factory=set)
+    excluded_item_ids: set[int] | None = None
     favorite_item_ids: set[int] = field(default_factory=set)
     recent_item_ids: list[int] = field(default_factory=list)
     preferences: Mapping[str, Any] = field(default_factory=dict)
     extra: Mapping[str, Any] = field(default_factory=dict)
+
+    def is_excluded(self, item_id: int) -> bool:
+        """Return whether an item must be omitted from recommendations.
+
+        Older callers only provide ``seen_item_ids``; those contexts retain
+        the previous exclusion behavior. API contexts can provide an empty
+        ``excluded_item_ids`` to keep views and impressions as soft signals.
+        """
+        excluded = self.seen_item_ids if self.excluded_item_ids is None else self.excluded_item_ids
+        return item_id in excluded
 
 
 class BaseRecommender(ABC):

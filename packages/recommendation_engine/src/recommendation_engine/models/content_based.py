@@ -115,7 +115,7 @@ class ContentBasedRecommender(BaseRecommender):
             if score <= 0:
                 continue
             iid = self._item_ids[i]
-            if iid in context.seen_item_ids:
+            if context.is_excluded(iid):
                 continue
             out.append(
                 Recommendation(
