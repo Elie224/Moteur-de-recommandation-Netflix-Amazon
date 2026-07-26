@@ -70,6 +70,15 @@ class ItemItemCosine:
 
         sim = cosine_similarity(R_c.T, dense_output=True).astype(np.float32)
         np.fill_diagonal(sim, 0.0)
+        # Optional: keep only the top-N neighbours per item to make scoring
+        # O(top_N * n_users) instead of O(n_items) and cut memory use.
+        if self.top_neighbours is not None and self.top_neighbours > 0:
+            k = min(self.top_neighbours, sim.shape[0] - 1)
+            top_idx = np.argpartition(-sim, k, axis=1)[:, :k]
+            mask = np.zeros_like(sim, dtype=bool)
+            rows = np.repeat(np.arange(sim.shape[0]), k)
+            mask[rows, top_idx.ravel()] = True
+            sim = np.where(mask & (sim > 0), sim, 0.0).astype(np.float32)
         self.item_similarity_ = sparse.csr_matrix(sim)
 
         # Store per-user seen items (python ints for downstream set ops)

@@ -1,4 +1,4 @@
-"""Streamlit dashboard for the movie recommendation engine.
+﻿"""Streamlit dashboard for the movie recommendation engine.
 
 Run:
     .venv/Scripts/python -m streamlit run app/dashboard.py
@@ -30,73 +30,46 @@ ART = ROOT / "data" / "processed" / "artifacts"
 
 @st.cache_resource
 def load_models():
-    with open(ART / "cosine.pkl", "rb") as f:
+    with open(ART / "item_item_cosine.pkl", "rb") as f:
         cos = pickle.load(f)
-    with open(ART / "svd.pkl", "rb") as f:
+    with open(ART / "surprise_svd.pkl", "rb") as f:
         svd = pickle.load(f)
-    lfm_state = torch.load(ART / "lightfm.pt", map_location="cpu", weights_only=False)
+    lfm_state = torch.load(ART / "hybrid_lightfm_state.pt", map_location="cpu", weights_only=False)
     movies = pd.read_csv(ART / "movies.csv")
-    with open(ART / "meta.json") as f:
+    with open(ART / "metadata.json") as f:
         meta = json.load(f)
-    return cos, svd, lfm_state, movies, meta
+    with open(ART / "manifest.json") as f:
+        manifest = json.load(f)
+    # Self-contained cold-start artifacts (P10)
+    user_features = np.load(ART / "user_features.npy")
+    item_features = np.load(ART / "item_features.npy")
+    user_index = {int(k): int(v) for k, v in json.load(open(ART / "user_index.json")).items()}
+    item_index = {int(k): int(v) for k, v in json.load(open(ART / "item_index.json")).items()}
+    user_vocab = {tuple(k.split("=", 1)): int(v) for k, v in json.load(open(ART / "user_feat_vocab.json")).items()}
+    item_vocab = {tuple(k.split("=", 1)): int(v) for k, v in json.load(open(ART / "item_feat_vocab.json")).items()}
+    return cos, svd, lfm_state, movies, meta, manifest, user_features, item_features, user_index, item_index, user_vocab, item_vocab
 
 
 @st.cache_resource
-def build_lightfm(_meta: dict, _lfm_state: dict):
-    from src.data.loaders import load_movielens_1m
+def build_lightfm(_lfm_state, _user_features, _item_features,
+                  _user_index, _item_index, _user_vocab, _item_vocab):
     from src.models.hybrid import LightFMModel, HybridCF
-
-    ml = load_movielens_1m(ROOT / "data" / "raw" / "ml-1m")
     lfm = LightFMModel(n_factors=_lfm_state["n_factors"])
-    lfm.user_feat_index_ = {
-        (k.split("=", 1)[0], k.split("=", 1)[1]): v
-        for k, v in _meta["user_feat_vocab"].items()
-    }
-    lfm.item_feat_index_ = {
-        (k.split("=", 1)[0], k.split("=", 1)[1]): v
-        for k, v in _meta["item_feat_vocab"].items()
-    }
-    ru = np.sort(ml.ratings["user_id"].unique())
-    ri = np.sort(ml.ratings["movie_id"].unique())
-    lfm.user_index_ = {int(u): i for i, u in enumerate(ru)}
-    lfm.item_index_ = {int(m): i for i, m in enumerate(ri)}
-    users_df = ml.users.set_index("user_id").loc[ru].reset_index()
-    movies_df = ml.movies.set_index("movie_id").loc[ri].reset_index()
-    uk = [[("gender", str(r["gender"])), ("age", str(r["age"])), ("occupation", str(r["occupation"]))]
-          for _, r in users_df.iterrows()]
-    max_u = max(len(ks) for ks in uk)
-    u_mat = np.zeros((len(ru), max_u), dtype=np.int64)
-    for i, ks in enumerate(uk):
-        for j, k in enumerate(ks):
-            if k in lfm.user_feat_index_:
-                u_mat[i, j] = lfm.user_feat_index_[k]
-    lfm.user_features_mat_ = torch.tensor(u_mat)
-    ik = []
-    for _, row in movies_df.iterrows():
-        ks = [("genre", g) for g in (row["genres_list"] or [])]
-        try:
-            year = int(row["year"]) if row["year"] == row["year"] else None
-        except (TypeError, ValueError):
-            year = None
-        if year:
-            ks.append(("decade", str((year // 10) * 10)))
-        ik.append(ks)
-    max_i = max(len(ks) for ks in ik) if ik else 1
-    i_mat = np.zeros((len(ri), max_i), dtype=np.int64)
-    for i, ks in enumerate(ik):
-        for j, k in enumerate(ks):
-            if k in lfm.item_feat_index_:
-                i_mat[i, j] = lfm.item_feat_index_[k]
-    lfm.item_features_mat_ = torch.tensor(i_mat)
+    lfm.user_feat_index_ = _user_vocab
+    lfm.item_feat_index_ = _item_vocab
+    lfm.user_index_ = _user_index
+    lfm.item_index_ = _item_index
+    lfm.user_features_mat_ = torch.tensor(_user_features)
+    lfm.item_features_mat_ = torch.tensor(_item_features)
     lfm.model = HybridCF(
-        n_users=len(lfm.user_index_), n_items=len(lfm.item_index_),
+        n_users=len(_user_index), n_items=len(_item_index),
         n_user_features=_lfm_state["n_user_feats"],
         n_item_features=_lfm_state["n_item_feats"],
         n_factors=_lfm_state["n_factors"],
     )
     lfm.model.load_state_dict(_lfm_state["model_state"])
     lfm.model.eval()
-    return lfm, movies_df
+    return lfm
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +124,8 @@ st.set_page_config(
     page_icon=":material/movie_filter:",
 )
 
-cos, svd, lfm_state, movies, meta = load_models()
+(cos, svd, lfm_state, movies, meta, manifest,
+ _user_features, _item_features, _user_index, _item_index, _user_vocab, _item_vocab) = load_models()
 all_genres = get_genres_list(movies)
 
 # Top header
@@ -166,8 +140,8 @@ with st.sidebar:
     st.metric("Notes", f"{meta['n_ratings']:,}")
     with st.container(border=True):
         st.markdown("**Features**")
-        st.write(f"User features: {len(meta['user_feat_vocab'])}")
-        st.write(f"Item features: {len(meta['item_feat_vocab'])}")
+        st.write(f"User features: {len(_user_vocab)}")
+        st.write(f"Item features: {len(_item_vocab)}")
     st.markdown("---")
     st.markdown("**API FastAPI** : [localhost:8000/docs](http://localhost:8000/docs)")
     st.markdown("**Code source** : `notebooks/01..05`")
@@ -301,7 +275,7 @@ with tab_cold:
 
     if st.button("Recommander (cold start)", type="primary", icon=":material/auto_awesome:"):
         with st.spinner("Chargement du modele hybride LightFM..."):
-            lfm, _ = build_lightfm(meta, lfm_state)
+            lfm = build_lightfm(lfm_state, _user_features, _item_features, _user_index, _item_index, _user_vocab, _item_vocab)
         feats = [("gender", gender), ("age", str(age)), ("occupation", str(occupation))]
         recs = lfm.recommend_for_new_user(feats, top_k=top_k_c)
         if not recs:

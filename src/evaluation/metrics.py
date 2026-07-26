@@ -15,6 +15,17 @@ We support two families:
 
 All metrics operate on DataFrames in the long format:
     user_id, item_id, rating, [timestamp], [prediction]
+
+Design choices (documented)
+---------------------------
+- **Relevance threshold**: by default ratings >= 4 are considered *relevant*
+  (MovieLens convention, used in the literature).
+- **Users with no relevant test item are excluded** from ranking averages.
+  The metric is undefined (always zero) for such users, including them would
+  dilute the signal. Use ``include_empty_users=True`` to override.
+- **Binary vs graded relevance for NDCG** is controlled by ``graded``:
+    - ``graded=False`` (default): binary relevance (1 if rating >= threshold).
+    - ``graded=True``         : graded, the actual rating is used.
 """
 from __future__ import annotations
 
@@ -43,11 +54,7 @@ def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 
 def _relevance_threshold(rating: float, threshold: float) -> int:
-    """Convert an explicit rating into a binary relevance label.
-
-    Following common practice (and the MovieLens literature), a rating is
-    considered *relevant* if it is >= ``threshold`` (default 4 in MovieLens).
-    """
+    """Convert an explicit rating into a binary relevance label."""
     return 1 if rating >= threshold else 0
 
 
@@ -124,7 +131,6 @@ def ndcg_at_k(recommended: list[int], relevant: dict[int, float], k: int) -> flo
         if rel > 0:
             dcg += (2 ** rel - 1) / math.log2(i + 1)
 
-    # ideal DCG: sort true relevances descending
     ideal_rels = sorted(relevant.values(), reverse=True)[:k]
     idcg = 0.0
     for i, rel in enumerate(ideal_rels, start=1):
@@ -143,6 +149,7 @@ def evaluate_ranking(
     k: int = 10,
     relevance_threshold: float = 4.0,
     graded: bool = False,
+    include_empty_users: bool = False,
 ) -> dict[str, float]:
     """Aggregate ranking metrics over all users with at least one test item.
 
@@ -156,9 +163,21 @@ def evaluate_ranking(
     k : int
         Cut-off for top-K metrics.
     relevance_threshold : float
-        Ratings >= threshold are considered relevant (only for ungraded eval).
+        Ratings >= threshold are considered relevant (used for binary NDCG
+        and for the relevance sets of P/R/HR/MAP).
     graded : bool
-        If True, use NDCG with the actual rating as graded relevance.
+        If True, NDCG uses the actual rating as graded relevance instead of
+        a binary 1/0 label.
+    include_empty_users : bool
+        If True, average over all users in ``recommendations`` (users with no
+        relevant test item contribute 0 to all metrics). Default False (only
+        users with at least one relevant item are averaged - cleaner signal).
+
+    Notes
+    -----
+    The recommendation list MUST NOT contain items the user already saw in
+    train. Callers are responsible for excluding them (the model wrappers do
+    this via ``exclude_seen=True``).
     """
     user_rel: dict[int, set[int]] = defaultdict(set)
     user_graded: dict[int, dict[int, float]] = defaultdict(dict)
@@ -171,19 +190,25 @@ def evaluate_ranking(
         user_graded[uid][iid] = rating
 
     p_list, r_list, hr_list, ap_list, ndcg_list = [], [], [], [], []
-    for uid, recs in recommendations.items():
+    uids = recommendations.keys() if include_empty_users else [
+        uid for uid in recommendations if user_rel.get(uid)
+    ]
+    for uid in uids:
+        recs = recommendations[uid]
         rel = user_rel.get(uid, set())
-        graded = user_graded.get(uid, {})
-        # only score users that have at least one relevant test item (otherwise
-        # the metric is ill-defined / always zero).
+        user_ratings = user_graded.get(uid, {})
+
+        p_list.append(precision_at_k(recs, rel, k))
+        r_list.append(recall_at_k(recs, rel, k))
+        hr_list.append(hit_rate_at_k(recs, rel, k))
+        ap_list.append(average_precision_at_k(recs, rel, k))
+
         if graded:
-            p_list.append(precision_at_k(recs, rel, k))
-            r_list.append(recall_at_k(recs, rel, k))
-            hr_list.append(hit_rate_at_k(recs, rel, k))
-            ap_list.append(average_precision_at_k(recs, rel, k))
-            ndcg_list.append(
-                ndcg_at_k(recs, {iid: r for iid, r in graded.items() if r >= relevance_threshold}, k)
-            )
+            ndcg_relevance = {iid: r for iid, r in user_ratings.items()
+                               if r >= relevance_threshold}
+        else:
+            ndcg_relevance = {iid: 1.0 for iid in rel}
+        ndcg_list.append(ndcg_at_k(recs, ndcg_relevance, k))
 
     def _mean(xs: list[float]) -> float:
         return float(np.mean(xs)) if xs else float("nan")
@@ -203,7 +228,6 @@ def catalog_coverage(
     catalog: set[int],
     k: int = 10,
 ) -> float:
-    """Fraction of the catalog that appears in the top-K across all users."""
     surfaced: set[int] = set()
     for recs in recommendations.values():
         surfaced.update(recs[:k])
@@ -215,10 +239,6 @@ def novelty(
     item_popularity: dict[int, int],
     k: int = 10,
 ) -> float:
-    """Mean -log2(pop / total_interactions) over recommended items.
-
-    Higher novelty = recommending more long-tail / less popular items.
-    """
     total = sum(item_popularity.values())
     if total == 0:
         return 0.0
@@ -229,3 +249,47 @@ def novelty(
             if p > 0:
                 scores.append(-math.log2(p))
     return float(np.mean(scores)) if scores else 0.0
+
+
+def evaluate_topk(
+    model,
+    train: pd.DataFrame,
+    test: pd.DataFrame,
+    k: int = 10,
+    relevance_threshold: float = 4.0,
+    n_users: int | None = None,
+    seed: int = 42,
+) -> dict[str, float]:
+    """End-to-end top-K evaluation with strict candidate policy.
+
+    For each test user we ask the model for ``top_k=k`` recommendations
+    on the **entire catalog** and verify the model excludes train items.
+    The same user population is used for every model so results are
+    directly comparable.
+
+    Parameters
+    ----------
+    model : object
+        Any model with ``recommend_for_users(user_ids, top_k)``.
+    train, test : DataFrame
+        Long-format ratings with columns ``user_id``, ``movie_id``, ``rating``.
+    k : int
+        Cut-off.
+    relevance_threshold : float
+        Rating threshold for relevance.
+    n_users : int | None
+        Subsample of test users (random with ``seed``). None = all.
+    """
+    train_users = set(train["user_id"].unique())
+    test_eval = test[test["user_id"].isin(train_users)].copy()
+    rng = np.random.default_rng(seed)
+    uids = test_eval["user_id"].unique()
+    if n_users is not None and n_users < len(uids):
+        uids = rng.choice(uids, size=n_users, replace=False)
+    uids = list(uids)
+    test_subset = test_eval[test_eval["user_id"].isin(uids)]
+    recs = model.recommend_for_users(uids, top_k=k)
+    metrics = evaluate_ranking(
+        recs, test_subset, k=k, relevance_threshold=relevance_threshold,
+    )
+    return metrics

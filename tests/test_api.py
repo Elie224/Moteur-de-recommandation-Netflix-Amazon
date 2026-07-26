@@ -106,5 +106,5 @@ def test_cold_start(client):
     r = client.post("/cold-start/recommend?top_k=5", json=payload)
     assert r.status_code == 200
     data = r.json()
-    assert data["model"] == "lightfm_hybrid"
+    assert data["model"] == "hybrid_lightfm"
     assert len(data["recommendations"]) == 5
