@@ -32,16 +32,17 @@ class HybridRecommender(BaseRecommender):
 
     def recommend(self, context: RecommendationContext) -> list[Recommendation]:
         all_scores: dict[int, dict[str, float]] = {}
-        reasons: dict[int, str] = {}
+        reasons: dict[int, tuple[float, str]] = {}
         for name, model in self._sub.items():
             weight = self._weights.get(name, 0.0)
             if weight <= 0:
                 continue
             for rec in model.recommend(context):
                 bucket = all_scores.setdefault(rec.item_id, {})
-                bucket[name] = rec.score * weight
-                if rec.reason and rec.item_id not in reasons:
-                    reasons[rec.item_id] = rec.reason
+                contribution = rec.score * weight
+                bucket[name] = contribution
+                if rec.reason and contribution > reasons.get(rec.item_id, (-1.0, ""))[0]:
+                    reasons[rec.item_id] = (contribution, rec.reason)
         out: list[Recommendation] = []
         for iid, breakdown in all_scores.items():
             if iid in context.seen_item_ids:
@@ -51,7 +52,7 @@ class HybridRecommender(BaseRecommender):
                 Recommendation(
                     item_id=iid,
                     score=total,
-                    reason=reasons.get(iid, "Multiple signals agree"),
+                    reason=reasons.get(iid, (0.0, "Multiple signals agree"))[1],
                     components=breakdown,
                 )
             )

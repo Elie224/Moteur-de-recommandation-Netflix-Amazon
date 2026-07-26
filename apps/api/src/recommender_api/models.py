@@ -11,6 +11,7 @@ User accounts live in ``User`` and preferences in ``UserPreference``.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -121,17 +122,17 @@ class Product(Base):
     catalog_item_id: Mapped[int] = mapped_column(
         ID_TYPE, ForeignKey("catalog_items.id", ondelete="CASCADE"), primary_key=True
     )
-    price_amount: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    price_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     price_currency: Mapped[str | None] = mapped_column(String(10))
     condition: Mapped[str | None] = mapped_column(String(100))
     brand: Mapped[str | None] = mapped_column(String(255), index=True)
     seller_name: Mapped[str | None] = mapped_column(String(255))
     availability: Mapped[str | None] = mapped_column(String(100), index=True)
-    shipping_cost: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    shipping_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     marketplace: Mapped[str | None] = mapped_column(String(50), index=True)
     product_url: Mapped[str | None] = mapped_column(Text)
     condition_description: Mapped[str | None] = mapped_column(Text)
-    seller_feedback_percentage: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    seller_feedback_percentage: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     seller_feedback_score: Mapped[int | None] = mapped_column(BigInteger)
     shipping_currency: Mapped[str | None] = mapped_column(String(10))
     additional_images: Mapped[list[Any]] = mapped_column(JSON_TYPE, default=list)

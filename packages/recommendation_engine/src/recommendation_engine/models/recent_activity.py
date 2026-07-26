@@ -47,10 +47,14 @@ class RecentActivityRecommender(BaseRecommender):
         return self
 
     def recommend(self, context: RecommendationContext) -> list[Recommendation]:
-        if not context.recent_item_ids:
+        seed_item_ids = list(context.recent_item_ids)
+        for item_id in context.favorite_item_ids:
+            if item_id not in seed_item_ids:
+                seed_item_ids.append(item_id)
+        if not seed_item_ids:
             return self._popularity_fallback(context)
         scores: dict[int, float] = defaultdict(float)
-        for iid in context.recent_item_ids[: self.max_recent]:
+        for iid in seed_item_ids[: self.max_recent]:
             for tag in self._item_tags.get(iid, []):
                 for cand, w in self._tag_neighbours.get(tag, {}).items():
                     if cand in context.seen_item_ids:
