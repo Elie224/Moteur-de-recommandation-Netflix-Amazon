@@ -57,7 +57,7 @@ class RecentActivityRecommender(BaseRecommender):
         for iid in seed_item_ids[: self.max_recent]:
             for tag in self._item_tags.get(iid, []):
                 for cand, w in self._tag_neighbours.get(tag, {}).items():
-                    if cand in context.seen_item_ids:
+                    if context.is_excluded(cand):
                         continue
                     if cand == iid:
                         continue
@@ -79,7 +79,7 @@ class RecentActivityRecommender(BaseRecommender):
     def _popularity_fallback(self, context: RecommendationContext) -> list[Recommendation]:
         out: list[Recommendation] = []
         for iid, score in self._popularity:
-            if iid in context.seen_item_ids:
+            if context.is_excluded(iid):
                 continue
             out.append(
                 Recommendation(

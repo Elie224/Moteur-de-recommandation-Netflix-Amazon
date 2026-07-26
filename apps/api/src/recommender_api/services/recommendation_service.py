@@ -17,6 +17,7 @@ from recommendation_engine import (
 
 from ..config import get_settings
 from ..models import CatalogItem, Interaction
+from .recommendation_model_service import recommendation_model_service
 
 
 class DBInteractionFrame(InteractionFrame):
@@ -27,6 +28,7 @@ class DBInteractionFrame(InteractionFrame):
         self._weights = dict(weights)
         self.item_type = item_type
         self._cache: list[dict[str, Any]] | None = None
+        self._rows_by_user: dict[int, list[dict[str, Any]]] = {}
 
     def user_ids(self) -> Iterable[int]:
         return {row["user_id"] for row in self.weighted_rows()}
@@ -35,9 +37,11 @@ class DBInteractionFrame(InteractionFrame):
         return {row["item_id"] for row in self.weighted_rows()}
 
     def rows_for_user(self, user_id: int) -> Iterable[Mapping[str, Any]]:
-        for row in self.weighted_rows():
-            if row["user_id"] == user_id:
-                yield row
+        if user_id not in self._rows_by_user:
+            self._rows_by_user[user_id] = [
+                row for row in self.weighted_rows() if row["user_id"] == user_id
+            ]
+        return iter(self._rows_by_user[user_id])
 
     def weighted_rows(self) -> list[dict[str, Any]]:
         if self._cache is not None:
@@ -47,6 +51,7 @@ class DBInteractionFrame(InteractionFrame):
             Interaction.catalog_item_id,
             Interaction.event_type,
             Interaction.event_value,
+            CatalogItem.item_type,
         )
         stmt = stmt.join(CatalogItem, CatalogItem.id == Interaction.catalog_item_id).where(
             CatalogItem.is_active.is_(True)
@@ -60,19 +65,12 @@ class DBInteractionFrame(InteractionFrame):
             out.append({
                 "user_id": int(r.user_id),
                 "item_id": int(r.catalog_item_id),
-                "item_type": "",
+                "item_type": r.item_type,
                 "weight": weight,
                 "event_type": r.event_type,
             })
-        item_ids = {row["item_id"] for row in out}
-        if item_ids:
-            type_stmt = select(CatalogItem.id, CatalogItem.item_type).where(CatalogItem.id.in_(item_ids))
-            type_map = {iid: itype for iid, itype in self.db.execute(type_stmt).all()}
-        else:
-            type_map = {}
-        for row in out:
-            row["item_type"] = type_map.get(row["item_id"], "")
         self._cache = out
+        self._rows_by_user = {}
         return out
 
 
@@ -166,6 +164,7 @@ def fit_recommender_for_domain(db: Session, item_type: str) -> BaseRecommender:
 def build_recommendation_context(db: Session, user_id: int, item_type: str, top_k: int, preferences: Mapping[str, Any]) -> RecommendationContext:
     from .interaction_service import (
         disliked_items_for,
+        excluded_items_for,
         favorite_items_for,
         recent_items_for,
         seen_items_for,
@@ -178,6 +177,7 @@ def build_recommendation_context(db: Session, user_id: int, item_type: str, top_
         item_type=item_type,
         top_k=top_k,
         seen_item_ids=seen_items_for(db, user_id, item_type),
+        excluded_item_ids=excluded_items_for(db, user_id, item_type),
         favorite_item_ids=favorite_item_ids,
         recent_item_ids=recent_items_for(db, user_id, item_type=item_type),
         preferences=dict(preferences),

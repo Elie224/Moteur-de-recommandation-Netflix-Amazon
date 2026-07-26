@@ -36,7 +36,7 @@ class PopularityRecommender(BaseRecommender):
     def recommend(self, context: RecommendationContext) -> list[Recommendation]:
         out: list[Recommendation] = []
         for iid, score in self._rank:
-            if iid in context.seen_item_ids:
+            if context.is_excluded(iid):
                 continue
             score = float(score)
             if score <= 0:

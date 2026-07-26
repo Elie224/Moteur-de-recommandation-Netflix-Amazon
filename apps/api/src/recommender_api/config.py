@@ -80,6 +80,7 @@ class Settings(BaseSettings):
 
     recommendation_default_top_k: int = Field(default=20)
     recommendation_max_top_k: int = Field(default=100)
+    recommendation_model_cache_ttl_seconds: float = Field(default=600.0, ge=0)
     popularity_min_interactions: int = Field(default=3)
     recent_activity_window: int = Field(default=20)
     recent_activity_half_life_hours: float = Field(default=24.0)
