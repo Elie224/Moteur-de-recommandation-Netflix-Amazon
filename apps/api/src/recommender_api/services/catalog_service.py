@@ -27,6 +27,7 @@ def list_catalog(
     offset: int = 0,
 ) -> Sequence[CatalogItem]:
     stmt = select(CatalogItem).options(selectinload(CatalogItem.movie), selectinload(CatalogItem.product))
+    stmt = stmt.where(CatalogItem.is_active.is_(True))
     if item_type:
         stmt = stmt.where(CatalogItem.item_type == item_type)
     if q:
@@ -34,14 +35,16 @@ def list_catalog(
         stmt = stmt.where(CatalogItem.title.ilike(like))
     if category:
         stmt = stmt.where(CatalogItem.category == category)
-    stmt = stmt.where(CatalogItem.is_active.is_(True))
     stmt = stmt.order_by(CatalogItem.popularity_score.desc(), CatalogItem.id.asc())
     stmt = stmt.limit(limit).offset(offset)
     return db.execute(stmt).scalars().all()
 
 
 def list_categories(db: Session, item_type: str | None = None) -> list[str]:
-    stmt = select(CatalogItem.category).where(CatalogItem.category.is_not(None))
+    stmt = select(CatalogItem.category).where(
+        CatalogItem.category.is_not(None),
+        CatalogItem.is_active.is_(True),
+    )
     if item_type:
         stmt = stmt.where(CatalogItem.item_type == item_type)
     rows = db.execute(stmt.distinct()).all()

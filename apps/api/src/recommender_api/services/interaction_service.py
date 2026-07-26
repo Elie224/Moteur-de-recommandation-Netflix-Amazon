@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Interaction, UserPreference
+from ..models import CatalogItem, Favorite, Interaction, UserPreference
 
 
 EVENT_WEIGHTS: dict[str, float] = {
@@ -25,6 +25,9 @@ EVENT_WEIGHTS: dict[str, float] = {
 }
 
 VALID_EVENT_TYPES = set(EVENT_WEIGHTS)
+STRONG_POSITIVE_EVENTS = frozenset({"like", "favorite", "rating", "purchase_redirect"})
+STRONG_NEGATIVE_EVENTS = frozenset({"dislike"})
+STRONG_EVENTS = STRONG_POSITIVE_EVENTS | STRONG_NEGATIVE_EVENTS
 
 
 def weight_for(event_type: str) -> float:
@@ -46,19 +49,87 @@ def record_interaction(db: Session, *, user, catalog_item_id: int, event_type: s
     return interaction
 
 
-def recent_items_for(db: Session, user_id: int, limit: int = 20) -> list[int]:
+def recent_items_for(
+    db: Session,
+    user_id: int,
+    limit: int = 20,
+    item_type: str | None = None,
+) -> list[int]:
     stmt = (
         select(Interaction.catalog_item_id)
+        .join(CatalogItem, CatalogItem.id == Interaction.catalog_item_id)
         .where(Interaction.user_id == user_id)
+        .where(Interaction.event_type != "impression")
+        .where(CatalogItem.is_active.is_(True))
         .order_by(Interaction.created_at.desc())
         .limit(limit)
     )
+    if item_type:
+        stmt = stmt.where(CatalogItem.item_type == item_type)
     return [row[0] for row in db.execute(stmt).all()]
 
 
-def seen_items_for(db: Session, user_id: int) -> set[int]:
-    stmt = select(Interaction.catalog_item_id).where(Interaction.user_id == user_id).distinct()
-    return {row[0] for row in db.execute(stmt).all()}
+def _latest_strong_events_for(
+    db: Session,
+    user_id: int,
+    item_type: str | None = None,
+) -> dict[int, str]:
+    stmt = (
+        select(Interaction.catalog_item_id, Interaction.event_type)
+        .join(CatalogItem, CatalogItem.id == Interaction.catalog_item_id)
+        .where(
+            Interaction.user_id == user_id,
+            Interaction.event_type.in_(STRONG_EVENTS),
+            CatalogItem.is_active.is_(True),
+        )
+        .order_by(Interaction.created_at.desc(), Interaction.id.desc())
+    )
+    if item_type:
+        stmt = stmt.where(CatalogItem.item_type == item_type)
+
+    latest: dict[int, str] = {}
+    for item_id, event_type in db.execute(stmt).all():
+        latest.setdefault(int(item_id), event_type)
+    return latest
+
+
+def favorite_items_for(
+    db: Session,
+    user_id: int,
+    item_type: str | None = None,
+) -> set[int]:
+    stmt = (
+        select(Favorite.catalog_item_id)
+        .join(CatalogItem, CatalogItem.id == Favorite.catalog_item_id)
+        .where(
+            Favorite.user_id == user_id,
+            CatalogItem.is_active.is_(True),
+        )
+    )
+    if item_type:
+        stmt = stmt.where(CatalogItem.item_type == item_type)
+    return {int(item_id) for item_id in db.execute(stmt).scalars()}
+
+
+def disliked_items_for(
+    db: Session,
+    user_id: int,
+    item_type: str | None = None,
+) -> set[int]:
+    latest = _latest_strong_events_for(db, user_id, item_type)
+    return {item_id for item_id, event_type in latest.items() if event_type in STRONG_NEGATIVE_EVENTS}
+
+
+def seen_items_for(
+    db: Session,
+    user_id: int,
+    item_type: str | None = None,
+) -> set[int]:
+    """Return hard exclusions, not every item merely viewed or impressed."""
+    latest = _latest_strong_events_for(db, user_id, item_type)
+    seen = set(latest)
+    seen.update(favorite_items_for(db, user_id, item_type))
+    return seen
 
 
 def list_interactions_for(db: Session, user_id: int, limit: int = 100) -> list[Interaction]:

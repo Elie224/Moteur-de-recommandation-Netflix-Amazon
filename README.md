@@ -1,125 +1,222 @@
-# Moteur de recommandation Netflix / Amazon
+# RecoSphere
 
-Systeme de recommandation automatique de films et produits, construit progressivement avec des techniques utilisees en production par Netflix, Amazon, Spotify, Cdiscount, etc.
+Plateforme de recommandation multi-domaines pour les films et les produits.
+RecoSphere sépare le catalogue unifié, les intégrations externes, l’API, le
+frontend et le moteur de recommandation afin de pouvoir ajouter de nouvelles
+sources sans modifier le cœur du système.
 
-## Objectifs pedagogiques
+## Parcours actuel
 
-- Comprendre les bases mathematiques des systemes de recommandation (cosine, SVD, factorisation matricielle).
-- Implementer plusieurs familles d algorithmes et les comparer sur des metriques de ranking (Precision@K, Recall@K, NDCG, MAP).
-- Savoir gerer le cold start (nouvel utilisateur / nouvel item).
-- Construire un modele hybride combinant filtrage collaboratif et contenu.
-- Livrer une API et un dashboard pour rendre le systeme tangible.
-
-## Modules
-
-| # | Module                          | Techniques                                | Librairies               |
-|---|---------------------------------|-------------------------------------------|--------------------------|
-| 1 | Baselines                       | Cosine similarity, popularite globale     | numpy, scipy, pandas     |
-| 2 | Collaborative Filtering         | KNN, SVD, NMF, BaselineOnly, CoClustering | scikit-surprise          |
-| 3 | Matrix Factorization            | FunkSVD from scratch, ALS-MF              | numpy                    |
-| 4 | Embeddings neuroniques          | TwoTower, Neural Collaborative Filtering  | PyTorch                  |
-| 5 | Modele hybride                  | LightFM-style (MSE + BPR, side features)  | PyTorch                  |
-| 6 | API REST                        | FastAPI + TestClient                      | fastapi, uvicorn         |
-| 7 | Dashboard interactif            | Streamlit                                 | streamlit                |
-
-## Dataset
-
-MovieLens 1M (~1M de notes, ~6K utilisateurs, ~4K films).
-Split temporel 80/20 (pas random) pour respecter le contexte production.
-
-## Structure du projet
-
-```
-Moteur de recommadation/
-|-- data/raw/ml-1m/                donnees brutes MovieLens
-|-- data/processed/artifacts/      modeles prod pre-entraines (cosine.pkl, svd.pkl, lightfm.pt)
-|-- notebooks/                     5 notebooks (01..05)
-|-- src/
-|   |-- data/                      loaders + downloader
-|   |-- evaluation/                metriques (RMSE, P@K, R@K, NDCG, MAP, coverage, novelty)
-|   |-- models/                    baselines + Surprise + FunkSVD/ALS + PyTorch CF + LightFM
-|   |-- api/                       FastAPI app
-|-- app/                           Streamlit dashboard + smoke test
-|-- scripts/                       build_notebook_*, train_production_models.py
-|-- tests/                         pytest suite (49 tests)
-|-- requirements.txt
-|-- README.md
+```text
+TMDB
+  → validation et normalisation
+  → PostgreSQL
+  → API FastAPI
+  → frontend Next.js
+  → interactions utilisateur
+  → recommandations personnalisées
 ```
 
-## Demarrage rapide
+Le parcours films disponible est :
+
+```text
+inscription → connexion → onboarding → catalogue → like/dislike/favori
+→ recommandations
+```
+
+L’intégration eBay est présente dans le code mais reste volontairement en
+attente. Anthropic est réservé aux explications et à l’enrichissement des
+préférences ; le classement ne dépend pas d’un LLM.
+
+## Architecture
+
+```text
+RecoSphere/
+├── apps/
+│   ├── api/                         API FastAPI active
+│   │   ├── alembic/                 migrations PostgreSQL
+│   │   ├── src/recommender_api/
+│   │   │   ├── integrations/tmdb/   client, schémas, mapper
+│   │   │   ├── integrations/ebay/   intégration en attente
+│   │   │   ├── services/             catalogue, interactions, recommandations
+│   │   │   └── workers/              synchronisations CLI
+│   │   └── tests/
+│   └── web/                         frontend Next.js actif
+│       ├── src/app/                 pages films, auth, favoris, admin
+│       ├── src/components/
+│       └── src/lib/
+├── packages/
+│   └── recommendation_engine/       moteur Python réutilisable
+├── infra/
+│   └── docker-compose.yml            PostgreSQL, API et frontend
+├── notebooks/                        laboratoire MovieLens historique
+├── src/                              anciens modèles et évaluations
+├── app/                              ancien dashboard Streamlit
+├── scripts/                          anciens scripts d’entraînement
+└── data/                             données et artefacts locaux ignorés
+```
+
+`apps/api`, `apps/web` et `packages/recommendation_engine` constituent la
+plateforme active. Les notebooks, `src/` et `app/` documentent les expériences
+MovieLens et restent séparés du parcours applicatif principal.
+
+## Démarrage avec Docker
+
+Prérequis : Docker Desktop démarré.
+
+Depuis la racine du dépôt :
 
 ```powershell
-cd "C:\Users\KOURO\Documents\Moteur de recommadation"
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-
-# Telecharger MovieLens 1M
-python src\data\download_data.py
-
-# Entrainer les modeles de production
-python scripts\train_production_models.py
-
-# Lancer l API
-.\.venv\Scripts\uvicorn src.api.app:app --reload --port 8000
-
-# Lancer le dashboard
-.\.venv\Scripts\python -m streamlit run app\dashboard.py
-
-# Lancer les notebooks
-.\.venv\Scripts\jupyter notebook notebooks\
-
-# Tests
-.\.venv\Scripts\python -m pytest tests\ -v
+docker compose -f infra/docker-compose.yml up --build -d
 ```
 
-## Endpoints API
+Sur la configuration locale actuelle :
 
-| Endpoint                              | Description                          |
-|---------------------------------------|--------------------------------------|
-| GET /                                 | Info service                         |
-| GET /health                           | Health check                         |
-| GET /models                           | Liste des modeles                    |
-| GET /stats                            | Stats dataset                        |
-| GET /movies/{id}                      | Info film                            |
-| GET /movies?query=...                 | Recherche film                       |
-| GET /users/{uid}/recommend?model=...  | Top-K recommandations                |
-| GET /predict?user_id=...&movie_id=... | Predire une note                     |
-| POST /cold-start/recommend            | Recos pour nouvel utilisateur        |
+| Service | Adresse |
+|---|---|
+| Frontend | http://localhost:3100 |
+| API | http://localhost:8010 |
+| Swagger | http://localhost:8010/docs |
+| PostgreSQL | localhost:5432 |
 
-Documentation auto-generee : http://localhost:8000/docs
+Les ports hôtes peuvent être surchargés avec `RECOSPHERE_API_HOST_PORT` et
+`RECOSPHERE_WEB_HOST_PORT`. Le frontend utilise `localhost:8010` dans le
+navigateur et `api:8000` pour ses appels internes au réseau Docker.
 
-## Comparaison finale (MovieLens 1M, temporal split)
+Commandes utiles :
 
-| Modele               | RMSE  | MAE   | P@10  | NDCG@10 | Cold Start |
-|----------------------|-------|-------|-------|---------|------------|
-| Popularity           | -     | -     | 0.195 | 0.165   | no         |
-| ItemItemCosine (m1)  | 0.955 | 0.744 | 0.223 | 0.207   | no         |
-| Surprise SVD (m2)    | 0.871 | 0.684 | 0.079 | 0.072   | no         |
-| FunkSVD ours (m3)    | 0.902 | 0.706 | 0.064 | 0.055   | no         |
-| ALS-MF ours (m3)     | 1.169 | 0.894 | 0.018 | 0.013   | no         |
-| TwoTower (m4)        | 1.063 | 0.848 | -     | -       | no         |
-| NeuralCF (m4)        | 0.980 | 0.788 | -     | -       | no         |
-| LightFM hybrid (m5)  | 0.972 | 0.759 | -     | -       | yes        |
+```powershell
+docker compose -f infra/docker-compose.yml ps
+docker compose -f infra/docker-compose.yml logs -f api
+docker compose -f infra/docker-compose.yml logs -f web
+docker compose -f infra/docker-compose.yml down
+```
 
-## Metriques d evaluation
+## Configuration
 
-- Prediction de note : RMSE, MAE
-- Ranking : Precision@K, Recall@K, NDCG@K, MAP@K, Hit Rate
-- Au-dela de la precision : catalog coverage, novelty
+Copiez les variables nécessaires dans le fichier `.env` local. Ne commitez
+jamais ce fichier : il peut contenir des tokens et des secrets.
 
-## Stack technique
+```env
+RECOSPHERE_TMDB_ACCESS_TOKEN=<API Read Access Token TMDB>
+RECOSPHERE_TMDB_BASE_URL=https://api.themoviedb.org/3
+RECOSPHERE_TMDB_IMAGE_BASE_URL=https://image.tmdb.org/t/p
+RECOSPHERE_TMDB_IMAGE_SIZE=w500
+RECOSPHERE_TMDB_LANGUAGE=fr-FR
+RECOSPHERE_TMDB_REGION=FR
+RECOSPHERE_TMDB_SYNC_MAX_PAGES=5
+RECOSPHERE_TMDB_REQUEST_TIMEOUT=20
+```
 
-- Python 3.14
-- pandas, numpy, scipy, scikit-learn
-- scikit-surprise
-- PyTorch (CPU)
-- FastAPI + uvicorn
-- Streamlit
-- pytest
+Le service API peut démarrer sans token TMDB, mais la synchronisation retournera
+une erreur de configuration tant qu’un vrai **API Read Access Token** n’est pas
+configuré.
 
-## Notes techniques
+## Synchroniser TMDB
 
-- `SURPRISE_DATA_FOLDER` est redirige vers `.surprise_data/` (permissions Windows sur `~/.surprise_data`).
-- LightFM est implemente from scratch en PyTorch (la lib officielle n a pas de wheel pour Python 3.14).
-- Le smoke test du module 2 (KNN) a ete retire du test rapide car trop long sur 800k notes (CF en prod avec KNN est OK).
+La synchronisation crée un `SyncRun`, déduplique les identifiants TMDB et met à
+jour `CatalogItem` ainsi que `Movie` sans créer de doublons.
+
+Depuis Docker, pour un premier lot limité :
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T api `
+  python -m recommender_api.workers.sync_tmdb --max-pages 1
+```
+
+L’endpoint administrateur équivalent est :
+
+```http
+POST /api/v1/admin/sync/tmdb
+```
+
+Après une synchronisation, les films sont disponibles avec :
+
+```http
+GET /api/v1/catalog?item_type=movie
+GET /api/v1/catalog/{item_id}
+```
+
+## API principale
+
+Toutes les routes applicatives sont préfixées par `/api/v1`.
+
+| Route | Usage |
+|---|---|
+| `POST /auth/register` | créer un compte |
+| `POST /auth/login` | se connecter |
+| `GET /auth/me` | utilisateur courant |
+| `GET /catalog` | catalogue films/produits |
+| `GET /catalog/{id}` | détail d’un item actif |
+| `POST /interactions` | impression, vue, like, dislike, etc. |
+| `GET /favorites` | favoris de l’utilisateur |
+| `POST /favorites/{id}` | ajouter/retirer un favori |
+| `POST /onboarding` | préférences initiales |
+| `GET /recommendations/{item_type}` | recommandations hybrides |
+| `GET /admin/metrics` | métriques administrateur |
+| `POST /admin/sync/tmdb` | synchronisation TMDB administrateur |
+
+## Moteur de recommandation
+
+Le package `recommendation_engine` est indépendant de FastAPI et de SQLAlchemy.
+Le moteur hybride V1 combine actuellement :
+
+```text
+item cosine       35 %
+content based     30 %
+recent activity   20 %
+popularity        15 %
+```
+
+Les frames SQL filtrent le domaine demandé et les items actifs. Les favoris
+alimentent le contexte utilisateur ; les signaux forts (`like`, `dislike`,
+`rating`, etc.) sont traités comme des préférences actives, tandis qu’une
+simple vue ou impression ne retire pas définitivement l’item du catalogue de
+recommandation.
+
+Le laboratoire historique contient aussi des implémentations et comparaisons
+MovieLens : popularité, cosine item-item, SVD, FunkSVD, ALS, Two-Tower,
+NeuralCF et modèle hybride de type LightFM.
+
+## Tests et validation
+
+Tests API et intégrations sans appel TMDB/eBay réel :
+
+```powershell
+python -m pytest apps/api/tests -q
+python -m pytest tests -q
+```
+
+Vérification frontend :
+
+```powershell
+cd apps/web
+npm ci
+npm run typecheck
+npm run build
+```
+
+PostgreSQL est utilisé par Docker en environnement applicatif. Les tests
+rapides utilisent SQLite ; les migrations de production sont gérées par
+Alembic dans `apps/api/alembic`.
+
+## Sécurité et limites actuelles
+
+- Les secrets restent dans `.env` et ne doivent jamais être poussés.
+- Le JWT stocké côté frontend est acceptable pour le MVP ; un cookie HTTP-only
+  est recommandé avant un déploiement public.
+- Les valeurs par défaut de Compose sont destinées au développement local.
+- Le calcul du moteur est encore effectué à la demande ; un service d’artefacts
+  versionnés et un cache sont les prochaines étapes de scalabilité.
+- eBay reste en pause jusqu’à validation complète du parcours films.
+
+## Prochaines étapes
+
+1. Ajouter une CI GitHub Actions : tests backend, typecheck/build frontend,
+   migrations et validation Compose.
+2. Versionner les modèles entraînés et éviter le réentraînement à chaque
+   requête de recommandation.
+3. Normaliser les scores hybrides et mesurer Precision@K, Recall@K, NDCG,
+   couverture, diversité et nouveauté.
+4. Ajouter les tests PostgreSQL et Playwright du parcours utilisateur.
+5. Reprendre eBay après stabilisation et mesure du parcours films.

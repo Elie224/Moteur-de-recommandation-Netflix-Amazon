@@ -64,23 +64,27 @@ class ContentBasedRecommender(BaseRecommender):
         self._matrix = self._vectorizer.fit_transform(corpus)
         return self
 
-    def _profile_vector(self, interactions: Any, user_id: int) -> np.ndarray | None:
-        rows = list(interactions.rows_for_user(user_id))
-        if not rows:
-            return None
-        weights = []
-        indices = []
-        for row in rows:
+    def _profile_vector(
+        self,
+        interactions: Any,
+        user_id: int,
+        favorite_item_ids: set[int] | None = None,
+    ) -> np.ndarray | None:
+        weights_by_index: dict[int, float] = {}
+        for row in interactions.rows_for_user(user_id):
             iid = int(row["item_id"])
             if iid not in self._item_index:
                 continue
-            indices.append(self._item_index[iid])
-            weights.append(float(row["weight"]))
-        if not indices:
+            index = self._item_index[iid]
+            weights_by_index[index] = weights_by_index.get(index, 0.0) + float(row["weight"])
+        for iid in favorite_item_ids or set():
+            index = self._item_index.get(int(iid))
+            if index is not None:
+                weights_by_index[index] = weights_by_index.get(index, 0.0) + 3.0
+        if not weights_by_index:
             return None
-        rows_array = np.zeros(len(indices), dtype=np.int32)
-        cols_array = np.array(indices, dtype=np.int32)
-        data_array = np.array(weights, dtype=np.float32)
+        cols_array = np.array(list(weights_by_index), dtype=np.int32)
+        data_array = np.array(list(weights_by_index.values()), dtype=np.float32)
         profile = np.asarray(
             (self._matrix[cols_array].multiply(data_array[:, None])).sum(axis=0)
         ).ravel()
@@ -92,7 +96,15 @@ class ContentBasedRecommender(BaseRecommender):
         if self._matrix is None:
             return []
         interactions = context.extra.get("interactions")
-        profile = self._profile_vector(interactions, context.user_id) if interactions is not None else None
+        profile = (
+            self._profile_vector(
+                interactions,
+                context.user_id,
+                context.favorite_item_ids,
+            )
+            if interactions is not None
+            else None
+        )
         if profile is None:
             return []
         sims = linear_kernel(profile.reshape(1, -1), self._matrix).ravel()

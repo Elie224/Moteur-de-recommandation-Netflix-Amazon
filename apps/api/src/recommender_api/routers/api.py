@@ -180,7 +180,8 @@ def catalog_detail(item_id: int, db: Db) -> MovieOut | ProductOut:
 def create_interaction(payload: InteractionCreate, db: Db, current_user: CurrentUser) -> Interaction:
     if payload.event_type not in interaction_service.VALID_EVENT_TYPES:
         raise HTTPException(status_code=422, detail="Unsupported interaction type")
-    if db.get(CatalogItem, payload.catalog_item_id) is None:
+    item = db.get(CatalogItem, payload.catalog_item_id)
+    if item is None or not item.is_active:
         raise HTTPException(status_code=404, detail="Catalog item not found")
     interaction = interaction_service.record_interaction(
         db,
@@ -198,7 +199,8 @@ def interactions(db: Db, current_user: CurrentUser, limit: int = Query(100, ge=1
 
 @router.post("/favorites/{item_id}", response_model=FavoriteToggleResponse)
 def toggle_favorite(item_id: int, db: Db, current_user: CurrentUser) -> FavoriteToggleResponse:
-    if db.get(CatalogItem, item_id) is None:
+    item = db.get(CatalogItem, item_id)
+    if item is None or not item.is_active:
         raise HTTPException(status_code=404, detail="Catalog item not found")
     is_favorite = catalog_service.toggle_favorite(db, current_user.id, item_id)
     db.commit()
@@ -212,6 +214,7 @@ def favorites(db: Db, current_user: CurrentUser) -> list[CatalogItemBase]:
         .join(Favorite, Favorite.catalog_item_id == CatalogItem.id)
         .options(selectinload(CatalogItem.movie), selectinload(CatalogItem.product))
         .where(Favorite.user_id == current_user.id)
+        .where(CatalogItem.is_active.is_(True))
         .order_by(Favorite.created_at.desc())
     )
     return [CatalogItemBase.model_validate(_catalog_payload(item)) for item in db.execute(stmt).scalars().all()]
@@ -222,7 +225,7 @@ def onboarding(payload: OnboardingIn, db: Db, current_user: CurrentUser) -> None
     interaction_service.save_preferences(db, current_user, payload.model_dump(exclude={"favorite_movie_ids"}))
     for item_id in set(payload.favorite_movie_ids):
         item = db.get(CatalogItem, item_id)
-        if item is None or item.item_type != "movie":
+        if item is None or not item.is_active or item.item_type != "movie":
             continue
         exists = db.scalar(
             select(Favorite.id).where(Favorite.user_id == current_user.id, Favorite.catalog_item_id == item_id)

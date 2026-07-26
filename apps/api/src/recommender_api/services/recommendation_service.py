@@ -48,10 +48,11 @@ class DBInteractionFrame(InteractionFrame):
             Interaction.event_type,
             Interaction.event_value,
         )
+        stmt = stmt.join(CatalogItem, CatalogItem.id == Interaction.catalog_item_id).where(
+            CatalogItem.is_active.is_(True)
+        )
         if self.item_type:
-            stmt = stmt.join(CatalogItem, CatalogItem.id == Interaction.catalog_item_id).where(
-                CatalogItem.item_type == self.item_type
-            )
+            stmt = stmt.where(CatalogItem.item_type == self.item_type)
         rows = self.db.execute(stmt).all()
         out: list[dict[str, Any]] = []
         for r in rows:
@@ -82,15 +83,14 @@ class DBItemFrame(ItemFrame):
         self.db = db
         self.item_type = item_type
         self._items: list[dict[str, Any]] | None = None
+        self._by_id: dict[int, dict[str, Any]] = {}
 
     def item_ids(self) -> Iterable[int]:
         return [row["catalog_item_id"] for row in self.iter_rows()]
 
     def metadata(self, item_id: int) -> Mapping[str, Any]:
-        for row in self.iter_rows():
-            if row["catalog_item_id"] == item_id:
-                return row
-        return {}
+        self.iter_rows()
+        return self._by_id.get(item_id, {})
 
     def iter_rows(self) -> list[dict[str, Any]]:
         if self._items is not None:
@@ -106,6 +106,7 @@ class DBItemFrame(ItemFrame):
             CatalogItem.country,
             CatalogItem.popularity_score,
         )
+        stmt = stmt.where(CatalogItem.is_active.is_(True))
         if self.item_type:
             stmt = stmt.where(CatalogItem.item_type == self.item_type)
         rows = self.db.execute(stmt).all()
@@ -123,6 +124,7 @@ class DBItemFrame(ItemFrame):
                 "popularity_score": float(r.popularity_score or 0.0),
             })
         self._items = out
+        self._by_id = {row["catalog_item_id"]: row for row in out}
         return out
 
 
@@ -162,17 +164,27 @@ def fit_recommender_for_domain(db: Session, item_type: str) -> BaseRecommender:
 
 
 def build_recommendation_context(db: Session, user_id: int, item_type: str, top_k: int, preferences: Mapping[str, Any]) -> RecommendationContext:
-    from .interaction_service import recent_items_for, seen_items_for
+    from .interaction_service import (
+        disliked_items_for,
+        favorite_items_for,
+        recent_items_for,
+        seen_items_for,
+    )
+
+    favorite_item_ids = favorite_items_for(db, user_id, item_type)
 
     return RecommendationContext(
         user_id=user_id,
         item_type=item_type,
         top_k=top_k,
-        seen_item_ids=seen_items_for(db, user_id),
-        favorite_item_ids=set(),  # populated by favorite router if needed
-        recent_item_ids=recent_items_for(db, user_id),
+        seen_item_ids=seen_items_for(db, user_id, item_type),
+        favorite_item_ids=favorite_item_ids,
+        recent_item_ids=recent_items_for(db, user_id, item_type=item_type),
         preferences=dict(preferences),
-        extra={"interactions": DBInteractionFrame(db, _event_weights(), item_type=item_type)},
+        extra={
+            "interactions": DBInteractionFrame(db, _event_weights(), item_type=item_type),
+            "disliked_item_ids": disliked_items_for(db, user_id, item_type),
+        },
     )
 
 
